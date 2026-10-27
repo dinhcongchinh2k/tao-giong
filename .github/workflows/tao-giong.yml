@@ -1,0 +1,20 @@
+name: Tao giong AI cho web
+on:
+  workflow_dispatch:
+jobs:
+  tao-giong:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install edge-tts
+      - run: python tao_giong_web.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hoc-cung-chinh-web-co-giong
+          path: out/
+          retention-days: 7
+          
