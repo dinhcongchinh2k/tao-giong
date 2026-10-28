@@ -26,6 +26,7 @@ APPS = {
                 {"id": "b2", "g": "m", "name": "Ryan", "desc": "Nam · giọng Anh (UK)", "v": ["en-GB-RyanNeural", "en-GB-ThomasNeural"]}]},
 }
 RATE = "-5%"; PARALLEL = 10; CHUNK = 300
+STAMP = time.strftime("%y%m%d%H%M")  # tên file mới mỗi lần chạy -> không bị dùng nhầm bản cũ trong bộ nhớ đệm
 # giọng nhân bản (do workflow "Nhan ban giong" tạo trong thư mục clone/)
 if os.path.exists("giong_nhan_ban.json") and os.path.isdir("clone"):
     CLALL = [v for v in json.load(open("giong_nhan_ban.json", encoding="utf8")) if os.path.isdir(os.path.join("clone", v["id"]))]
@@ -107,7 +108,7 @@ def main():
             for lv in sorted(bylv):
                 items = bylv[lv]
                 for c in range(0, len(items), CHUNK):
-                    name = f"{v['id']}-{lv}-{c // CHUNK}.bin"; fi = len(files); files.append(name); off = 0
+                    name = f"{v['id']}-{lv}-{c // CHUNK}-{STAMP}.bin"; fi = len(files); files.append(name); off = 0
                     with open(os.path.join(vd, name), "wb") as out:
                         for i, k in items[c:c + CHUNK]:
                             p = os.path.join("clone", v["id"], f"{i:05d}.webm") if v.get("clone") else os.path.join(TMP, app, v["id"], f"{i:05d}.webm")
