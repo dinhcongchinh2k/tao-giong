@@ -86,6 +86,20 @@ def main():
         for r in raw:
             k = norm(r[0], cfg["en"])
             if k and k not in seen: seen.add(k); words.append((r[0].strip(), k, int(r[cfg["lv"]])))
+        # câu: truyện, luyện nói, hội thoại giáo trình (+ câu ví dụ tiếng Anh) -> nhóm "0"
+        def grab(var):
+            m = re.search(r"const " + var + r" = (.*?);\n", html, re.S)
+            try: return json.loads(m.group(1)) if m else []
+            except Exception: return []
+        sents = [l["zh"] for x in grab("STORIES") for l in x.get("lines", [])]
+        sents += [l["zh"] for c in grab("SPEAK") for t in c.get("topics", []) for L in t.get("lessons", []) for l in L.get("lines", [])]
+        sents += [d[1] for b in grab("COURSE") for L in b.get("lessons", []) for d in L.get("d", []) if len(d) > 1]
+        if cfg["en"]: sents += [r[4] for r in raw if len(r) > 4 and r[4]]
+        ns = 0
+        for t in sents:
+            k = norm(t, cfg["en"])
+            if k and k not in seen and len(k) < 220: seen.add(k); words.append((t.strip(), k, 0)); ns += 1
+        print(app, ":", len(words) - ns, "từ +", ns, "câu", flush=True)
         plan[app] = words
         for v in cfg["voices"]:
             if v.get("clone"): continue
@@ -116,7 +130,7 @@ def main():
                             b = open(p, "rb").read(); out.write(b); m[k] = [fi, off, len(b)]; off += len(b)
             if not m or (not v.get("clone") and len(m) < len(words) * 0.5): print(f"  Bỏ giọng {v['name']} (thiếu quá nhiều: {len(m)}/{len(words)})"); continue
             json.dump({"f": files, "m": m}, open(os.path.join(vd, f"index-{v['id']}.json"), "w", encoding="utf8"), ensure_ascii=False, separators=(",", ":"))
-            vlist.append({k: v[k] for k in ("id", "g", "name", "desc")}); vlist[-1]["n"] = len(m); vlist[-1]["off"] = v.get("offline", True); count = max(count, len(m))
+            vlist.append({k: v[k] for k in ("id", "g", "name", "desc")}); nwv = sum(1 for (_, k, lv) in words if lv > 0 and k in m); vlist[-1]["n"] = nwv; vlist[-1]["sent"] = len(m) - nwv; vlist[-1]["off"] = v.get("offline", True); count = max(count, nwv)
             print(f"  {app}: {v['name']} có {len(m)}/{len(words)} từ", flush=True)
         json.dump({"voices": vlist, "mime": "audio/webm", "count": count, "date": time.strftime("%Y-%m-%d")},
                   open(os.path.join(vd, "manifest.json"), "w", encoding="utf8"), ensure_ascii=False)
