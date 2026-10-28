@@ -1,0 +1,146 @@
+[
+ {
+  "file": "giong1.mp3",
+  "id": "c1",
+  "g": "m",
+  "name": "Giọng 1",
+  "desc": "Nam · nhân bản",
+  "offline": true,
+  "app": "trung"
+ },
+ {
+  "file": "giong2.mp3",
+  "id": "c2",
+  "g": "m",
+  "name": "Giọng 2",
+  "desc": "Nam · nhân bản",
+  "offline": true,
+  "app": "trung"
+ },
+ {
+  "file": "giong3.mp3",
+  "id": "c3",
+  "g": "f",
+  "name": "Giọng 3",
+  "desc": "Nữ · nhân bản",
+  "offline": true,
+  "app": "trung"
+ },
+ {
+  "file": "giong4.mp3",
+  "id": "c4",
+  "g": "f",
+  "name": "Giọng 4",
+  "desc": "Nữ · nhân bản",
+  "offline": true,
+  "app": "trung"
+ },
+ {
+  "file": "giong5.mp3",
+  "id": "c5",
+  "g": "m",
+  "name": "Giọng 5",
+  "desc": "Nam · nhân bản",
+  "offline": true,
+  "app": "trung"
+ },
+ {
+  "file": "giong6.mp3",
+  "id": "c6",
+  "g": "f",
+  "name": "Giọng 6",
+  "desc": "Nữ · nhân bản",
+  "offline": true,
+  "app": "trung"
+ },
+ {
+  "file": "giong7.mp3",
+  "id": "c7",
+  "g": "f",
+  "name": "Giọng 7",
+  "desc": "Nữ · nhân bản",
+  "offline": true,
+  "app": "trung"
+ },
+ {
+  "file": "giong8.mp3",
+  "id": "c8",
+  "g": "m",
+  "name": "Giọng 8",
+  "desc": "Nam · nhân bản",
+  "offline": true,
+  "app": "trung"
+ },
+ {
+  "file": "en01.mp3",
+  "id": "e1",
+  "g": "f",
+  "name": "Nữ ngọt ngào",
+  "desc": "Sweet · nhân bản",
+  "offline": true,
+  "app": "anh"
+ },
+ {
+  "file": "en02.mp3",
+  "id": "e2",
+  "g": "f",
+  "name": "Nữ dễ thương",
+  "desc": "Cute · nhân bản",
+  "offline": true,
+  "app": "anh"
+ },
+ {
+  "file": "en03.mp3",
+  "id": "e3",
+  "g": "f",
+  "name": "Nữ vui tươi",
+  "desc": "Cheerful · nhân bản",
+  "offline": true,
+  "app": "anh"
+ },
+ {
+  "file": "en04.mp3",
+  "id": "e4",
+  "g": "f",
+  "name": "Nữ nhẹ nhàng",
+  "desc": "Gentle · nhân bản",
+  "offline": true,
+  "app": "anh"
+ },
+ {
+  "file": "en05.mp3",
+  "id": "e5",
+  "g": "m",
+  "name": "Nam trẻ trung",
+  "desc": "Young · nhân bản",
+  "offline": true,
+  "app": "anh"
+ },
+ {
+  "file": "en06.mp3",
+  "id": "e6",
+  "g": "m",
+  "name": "Nam thân thiện",
+  "desc": "Friendly · nhân bản",
+  "offline": true,
+  "app": "anh"
+ },
+ {
+  "file": "en07.mp3",
+  "id": "e7",
+  "g": "m",
+  "name": "Nam vui tươi",
+  "desc": "Cheerful · nhân bản",
+  "offline": true,
+  "app": "anh"
+ },
+ {
+  "file": "en08.mp3",
+  "id": "e8",
+  "g": "m",
+  "name": "Nam ấm áp",
+  "desc": "Soft · nhân bản",
+  "offline": true,
+  "app": "anh"
+ }
+]
