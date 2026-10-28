@@ -65,6 +65,5 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          accountId: b3258f4c09eb4e9122d7639252b680b8
           command: pages deploy out --project-name=hoc-cung-chinh --branch=main --commit-dirty=true
-          
