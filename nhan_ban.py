@@ -35,14 +35,21 @@ torch.set_num_threads(max(2, os.cpu_count() or 2))
 from f5_tts.api import F5TTS
 tts = F5TTS()
 ref_text = ""
+# 1) tự nhận lời của giọng mẫu bằng faster-whisper (không phụ thuộc torchcodec)
 try:
-    ref_text = tts.transcribe(ref)
+    from faster_whisper import WhisperModel
+    wm = WhisperModel("small", device="cpu", compute_type="int8")
+    segs, _ = wm.transcribe(ref, language="en" if EN else "zh", beam_size=5)
+    ref_text = "".join(sg.text for sg in segs).strip()
+    del wm
 except Exception:
-    try:
-        from f5_tts.infer.utils_infer import preprocess_ref_audio_text
-        ref, ref_text = preprocess_ref_audio_text(ref, "")
-    except Exception:
-        traceback.print_exc()
+    traceback.print_exc()
+# 2) dự phòng: bộ nhận lời của F5-TTS
+if not ref_text:
+    try: ref_text = tts.transcribe(ref)
+    except Exception: traceback.print_exc()
+if not ref_text: sys.exit("Không nhận được lời trong giọng mẫu " + V["file"])
+if not re.search(r"[。.!?！？]$", ref_text): ref_text += "." if EN else "。"
 print("Lời trong giọng mẫu:", ref_text, flush=True)
 
 import soundfile as sf
@@ -72,7 +79,8 @@ for n, (i, text, lv) in enumerate(sel):
         ok += 1
     except Exception as e:
         fail += 1
-        if fail <= 3: traceback.print_exc()
+        if fail <= 2: traceback.print_exc()
+        if ok == 0 and fail >= 10: sys.exit("10 từ đầu đều lỗi, dừng lại. Xem lỗi ở trên.")
     if n % 25 == 0: print(f"{n + 1}/{len(sel)} ok={ok} lỗi={fail} {int(time.time() - T0)}s", flush=True)
 print(f"XONG {V['name']}: ok={ok} lỗi={fail}", flush=True)
 if ok == 0: sys.exit("Không tạo được file nào")
