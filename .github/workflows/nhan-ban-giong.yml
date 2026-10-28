@@ -26,8 +26,8 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-f5tts-v1
-      - run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu && pip install f5-tts soundfile
+          key: hf-f5tts-v2
+      - run: pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cpu && pip install f5-tts soundfile faster-whisper "torch==2.8.0" "torchaudio==2.8.0"
       - run: python nhan_ban.py --voice ${{ matrix.voice }} --scope ${{ inputs.pham_vi }} --part ${{ matrix.part }} --parts ${{ inputs.pham_vi == 'thu' && 1 || 4 }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -67,3 +67,4 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy out --project-name=hoc-cung-chinh --branch=main --commit-dirty=true
+          
