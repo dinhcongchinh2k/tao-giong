@@ -3,12 +3,20 @@ on:
   workflow_dispatch:
     inputs:
       pham_vi:
-        description: "thu = 150 tu dau HSK1/A1 (khoang 2 gio) / tat_ca = tat ca tu vung (6-8 gio)"
+        description: "thu = 150 tu dau / tat_ca = tat ca tu vung / chi_dong_goi = dung lai giong cua lan chay cu"
         type: choice
         default: thu
-        options: [thu, tat_ca]
+        options: [thu, tat_ca, chi_dong_goi]
+      run_id:
+        description: "Chi dung khi chon chi_dong_goi: so cuoi trong dia chi cua lan chay cu (.../actions/runs/SO-NAY)"
+        required: false
+        default: ""
+permissions:
+  contents: read
+  actions: read
 jobs:
   nhan-ban:
+    if: inputs.pham_vi != 'chi_dong_goi'
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
@@ -54,6 +62,8 @@ jobs:
           pattern: clone-*
           path: clone
           merge-multiple: true
+          run-id: ${{ inputs.pham_vi == 'chi_dong_goi' && inputs.run_id || github.run_id }}
+          github-token: ${{ github.token }}
       - run: python tao_giong_web.py
       - uses: actions/upload-artifact@v4
         with:
@@ -67,3 +77,4 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: b3258f4c09eb4e9122d7639252b680b8
           command: pages deploy out --project-name=hoc-cung-chinh --branch=main --commit-dirty=true
+          
