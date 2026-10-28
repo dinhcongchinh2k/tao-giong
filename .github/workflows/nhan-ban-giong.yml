@@ -1,0 +1,69 @@
+name: Nhan ban 16 giong (8 Trung + 8 Anh)
+on:
+  workflow_dispatch:
+    inputs:
+      pham_vi:
+        description: "thu = 150 tu dau HSK1/A1 (khoang 2 gio) / tat_ca = tat ca tu vung (6-8 gio)"
+        type: choice
+        default: thu
+        options: [thu, tat_ca]
+jobs:
+  nhan-ban:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        voice: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        part: ${{ fromJSON(inputs.pham_vi == 'thu' && '[0]' || '[0,1,2,3]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-f5tts-v1
+      - run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu && pip install f5-tts soundfile
+      - run: python nhan_ban.py --voice ${{ matrix.voice }} --scope ${{ inputs.pham_vi }} --part ${{ matrix.part }} --parts ${{ inputs.pham_vi == 'thu' && 1 || 4 }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clone-${{ matrix.voice }}-${{ matrix.part }}
+          path: clone/
+          retention-days: 3
+  dong-goi:
+    needs: nhan-ban
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - run: pip install edge-tts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: clone-*
+          path: clone
+          merge-multiple: true
+      - run: python tao_giong_web.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-online-co-giong
+          path: out/
+          retention-days: 7
+      - name: Dua web len Cloudflare (tu dong)
+        if: env.CF_TOKEN != ''
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy out --project-name=hoc-cung-chinh --branch=main --commit-dirty=true
