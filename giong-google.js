@@ -6,7 +6,7 @@ const EDGE_M = { zh: "zh-CN-YunxiNeural", en: "en-US-AndrewNeural", vi: "vi-VN-N
 // giọng dự phòng (thử lần lượt nếu giọng chính lỗi) — để giọng nam luôn là giọng nam
 const BACKUP = { f: { zh: ["zh-CN-XiaoyiNeural"], en: ["en-US-JennyNeural", "en-US-AriaNeural"], vi: [] },
                  m: { zh: ["zh-CN-YunjianNeural", "zh-CN-YunyangNeural"], en: ["en-US-GuyNeural", "en-US-ChristopherNeural", "en-US-BrianNeural"], vi: [] } };
-const VERSION = "phiên bản 16 (AI nhanh hơn: bỏ qua mẫu quá tải, Gemini + AI Cloudflare)";
+const VERSION = "phiên bản 18 (Claude → Gemini → AI của Cloudflare)";
 const EDGE_RATE = { zh: "-10%", en: "-5%", vi: "+0%" };
 const GTX = { zh: "zh-CN", en: "en-US", vi: "vi" };
 const ALLOW = ["https://hoc-cung-chinh.pages.dev", "http://localhost", "http://127.0.0.1"];
@@ -223,17 +223,21 @@ async function dich(request, ctx, origin) {
 // ---- AI Gemini: /ai?m=tên-mẫu (POST nội dung gửi Gemini). Khóa nằm ở Secret GEMINI_KEY, không lộ ra web ----
 async function ai(request, env, url, origin) {
   const H = { "Content-Type": "application/json; charset=utf-8", ...cors(origin) };
-  if (!env.GEMINI_KEY) return new Response(JSON.stringify({ error: "Chưa cài khóa GEMINI_KEY" }), { status: 500, headers: H });
+  if (!env.GEMINI_KEY && !env.AI && !env.CLAUDE_KEY) return new Response(JSON.stringify({ error: "Chưa cài khóa AI" }), { status: 500, headers: H });
   const m = url.searchParams.get("m") || "gemini-2.5-flash";
   if (!/^((gemini|gemma)-[\w.-]+|auto)$/.test(m)) return new Response(JSON.stringify({ error: "model" }), { status: 400, headers: H });
   const call = (model, body, how) => fetch("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent" + (how === "q" ? "?key=" + encodeURIComponent(env.GEMINI_KEY) : ""), {
     method: "POST", headers: how === "q" ? { "Content-Type": "application/json" } : { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_KEY }, body });
   if (request.method !== "POST") {  // kiểm tra: /ai?xem=1 -> thử gọi Gemini và báo kết quả
-    const out = [VERSION, "Khóa: " + env.GEMINI_KEY.slice(0, 4) + "… (" + env.GEMINI_KEY.length + " ký tự)"];
+    const out = [VERSION, "Thứ tự dùng: " + [env.CLAUDE_KEY && "Claude", env.GEMINI_KEY && "Gemini", env.AI && "AI của Cloudflare"].filter(Boolean).join(" → "), "Khóa Gemini: " + (env.GEMINI_KEY ? env.GEMINI_KEY.slice(0, 4) + "… (" + env.GEMINI_KEY.length + " ký tự)" : "chưa có")];
+    if (env.CLAUDE_KEY) { try { const t0 = Date.now(), t = await claudeLLM(env, [{ role: "user", content: "Reply with the single word OK." }], 20); out.push("Claude (" + (env.CLAUDE_MODEL || "claude-haiku-5-5") + ") → " + t.trim().slice(0, 40) + " (" + (Date.now() - t0) + " ms)"); } catch (e) { out.push("Claude → lỗi " + String(e.message || e).slice(0, 220)); } }
+    else out.push("Claude: chưa có khóa CLAUDE_KEY");
+    if (env.AI) { try { const t0 = Date.now(), t = await cfLLM(env, [{ role: "user", content: "Reply with the single word OK." }], 20); out.push("AI của Cloudflare → " + t.trim().slice(0, 40) + " (" + (Date.now() - t0) + " ms)"); } catch (e) { out.push("AI của Cloudflare → lỗi " + String(e.message || e).slice(0, 160)); } }
+    else out.push("AI của Cloudflare: CHƯA BẬT (chạy lại Cap nhat may chu giong trên GitHub)");
+    if (!env.GEMINI_KEY) return new Response(out.join("\n"), { headers: { "Content-Type": "text/plain; charset=utf-8", ...cors(origin) } });
     let list = []; try { list = await geminiModels(env, true); } catch (e) { out.push("Không lấy được danh sách mẫu AI: " + (e.message || e)); }
     out.push("Mẫu AI dùng được (xếp theo ưu tiên): " + (list.slice(0, 8).join(", ") || "(không có)"));
-    if (env.AI) { try { const t = await cfLLM(env, [{ role: "user", content: "Reply with the single word OK." }], 20); out.push("AI của Cloudflare (Workers AI) → " + t.trim().slice(0, 60)); } catch (e) { out.push("AI của Cloudflare (Workers AI) → lỗi " + String(e.message || e).slice(0, 160)); } }
-    else out.push("AI của Cloudflare (Workers AI): chưa bật (cần cập nhật qua GitHub)");
+
     for (const model of list.slice(0, 3)) for (const how of [AI_HOW]) {
       const r = await call(model, JSON.stringify({ contents: [{ role: "user", parts: [{ text: "Reply with the single word OK." }] }] }), how);
       const t = await r.text(); let msg = t;
@@ -244,7 +248,17 @@ async function ai(request, env, url, origin) {
     return new Response(out.join("\n"), { headers: { "Content-Type": "text/plain; charset=utf-8", ...cors(origin) } });
   }
   const body = await request.text();
-  if (env.AI && GEM_BLOCKED > Date.now()) return cfAI(body, env, H);  // Gemini đang chặn khu vực: dùng AI của Cloudflare
+  // Thứ tự: 1) Claude (khóa CLAUDE_KEY)  2) Gemini (GEMINI_KEY)  3) AI của Cloudflare (Workers AI)
+  const isAudio = body.length > 150000;
+  if (env.CLAUDE_KEY && CL_FAIL < Date.now() && !(isAudio && !env.AI)) {
+    const rc = await claudeAI(body, env, H);
+    if (rc.status === 200) return rc;
+    const t = await rc.text();
+    CL_FAIL = /credit|balance|billing|quota|rate|401|403/i.test(t) ? Date.now() + 3600e3 : Date.now() + 120e3;  // hết tiền / sai khóa: nghỉ 1 giờ
+    if (!env.GEMINI_KEY && !env.AI) return new Response(t, { status: rc.status, headers: H });
+  }
+  if (!env.GEMINI_KEY) { if (env.AI) return cfAI(body, env, H); return new Response(JSON.stringify({ error: "Chưa có khóa AI nào (CLAUDE_KEY / GEMINI_KEY) và chưa bật AI của Cloudflare" }), { status: 500, headers: H }); }
+  if (env.AI && GEM_BLOCKED > Date.now()) return cfAI(body, env, H);  // Gemini đang chặn khu vực
   const big = body.length > 150000;  // có âm thanh (phụ đề video)
   const callT = async (model, bd, how) => {  // gọi có giới hạn thời gian; quá giờ -> null
     const ac = new AbortController(), tm = setTimeout(() => ac.abort(), big ? 60000 : 20000);
@@ -284,7 +298,7 @@ async function ai(request, env, url, origin) {
   if (env.AI) return cfAI(body, env, H);
   return new Response(last ? last.t : JSON.stringify({ error: "Không có mẫu AI nào dùng được" }), { status: last ? last.status : 503, headers: H });
 }
-let NO_THINK = false; const BAD = {};
+let NO_THINK = false, CL_FAIL = 0; const BAD = {};
 let GEM_BLOCKED = 0;
 // ---- AI của Cloudflare (Workers AI, miễn phí ~10.000 đơn vị/ngày). Trả về đúng dạng kết quả của Gemini ----
 const CF_LLM = ["@cf/google/gemma-3-12b-it", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"];
@@ -300,12 +314,35 @@ async function cfLLM(env, messages, maxTokens) {
   throw err || new Error("Workers AI không trả lời");
 }
 const gemOut = text => JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text }] } }], via: "workers-ai" });
-async function cfAI(bodyStr, env, H) {
+async function cfAI(bodyStr, env, H) { return viaLLM(bodyStr, env, H, (m, n) => cfLLM(env, m, n), true); }
+/* ---- Claude (API của Anthropic, khóa CLAUDE_KEY) ---- */
+async function claudeLLM(env, messages, maxTokens) {
+  const sys = messages.filter(m => m.role === "system").map(m => m.content).join("\n");
+  const msgs = [];
+  messages.filter(m => m.role !== "system").forEach(m => { const role = m.role === "assistant" ? "assistant" : "user";
+    if (msgs.length && msgs[msgs.length - 1].role === role) msgs[msgs.length - 1].content += "\n" + m.content; else msgs.push({ role, content: m.content }); });
+  if (!msgs.length || msgs[0].role !== "user") msgs.unshift({ role: "user", content: "(Bắt đầu.)" });
+  if (msgs[msgs.length - 1].role !== "user") msgs.push({ role: "user", content: "(Tiếp tục.)" });
+  const ac = new AbortController(), tm = setTimeout(() => ac.abort(), 45000);
+  try {
+    const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", signal: ac.signal,
+      headers: { "content-type": "application/json", "x-api-key": env.CLAUDE_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: env.CLAUDE_MODEL || "claude-haiku-5-5", max_tokens: maxTokens || 1500, ...(sys ? { system: sys } : {}), messages: msgs }) });
+    const t = await r.text();
+    if (!r.ok) throw new Error("claude " + r.status + " " + t.slice(0, 200));
+    const j = JSON.parse(t); const out = (j.content || []).filter(c => c.type === "text").map(c => c.text).join("");
+    if (!out.trim()) throw new Error("claude empty");
+    return out;
+  } finally { clearTimeout(tm); }
+}
+async function claudeAI(bodyStr, env, H) { return viaLLM(bodyStr, env, H, (m, n) => claudeLLM(env, m, n), false); }
+async function viaLLM(bodyStr, env, H, llm, isCF) {
   try {
     const b = JSON.parse(bodyStr), C = b.contents || [];
     const parts = C.flatMap(c => c.parts || []), media = parts.find(p => p.inlineData || p.inline_data);
     const promptText = parts.filter(p => p.text).map(p => p.text).join("\n");
-    if (media) {  // phụ đề video: Whisper nghe -> LLM dịch + pinyin
+    if (media) {  // phụ đề video: Whisper (Cloudflare) nghe -> AI dịch + pinyin
+      if (!env.AI) throw new Error("cần AI của Cloudflare để nghe video");
       const d = media.inlineData || media.inline_data;
       const w = await env.AI.run("@cf/openai/whisper-large-v3-turbo", { audio: d.data, task: "transcribe", vad_filter: true });
       const segs = (w.segments || []).map(x => ({ s: +(+x.start).toFixed(2), e: +(+x.end).toFixed(2), t: String(x.text || "").trim() })).filter(x => x.t);
@@ -314,7 +351,7 @@ async function cfAI(bodyStr, env, H) {
       let arr = null;
       for (let k = 0; k < 2 && !arr; k++) {
         try {
-          const t = await cfLLM(env, [{ role: "system", content: "Bạn là trợ lý làm phụ đề. Chỉ trả lời bằng JSON hợp lệ, không thêm chữ nào khác." },
+          const t = await llm([{ role: "system", content: "Bạn là trợ lý làm phụ đề. Chỉ trả lời bằng JSON hợp lệ, không thêm chữ nào khác." },
             { role: "user", content: `Dưới đây là các câu phụ đề (mảng JSON, có thời gian s/e). Với MỖI câu, trả về object {"s","e","t","p","v"}: giữ nguyên s và e; t = ${zh ? "lời gốc viết bằng chữ Hán giản thể (sửa lỗi nghe nhầm nếu rõ ràng)" : "lời gốc (sửa lỗi chính tả nếu rõ ràng)"}; p = ${zh ? "pinyin đầy đủ có dấu thanh, viết cách theo từ" : "chuỗi rỗng"}; v = dịch sang tiếng Việt tự nhiên. Trả về ĐÚNG một mảng JSON có cùng số phần tử.\n${JSON.stringify(segs)}` }], 3500);
           const m = t.match(/\[[\s\S]*\]/); const a = m && JSON.parse(m[0]);
           if (Array.isArray(a) && a.length) arr = a.map((x, i) => ({ s: segs[i] ? segs[i].s : +x.s, e: segs[i] ? segs[i].e : +x.e, t: String(x.t || (segs[i] || {}).t || ""), p: String(x.p || ""), v: String(x.v || "") }));
@@ -326,11 +363,11 @@ async function cfAI(bodyStr, env, H) {
     const messages = [];
     if (json) messages.push({ role: "system", content: "Luôn trả lời bằng đúng MỘT đối tượng/mảng JSON hợp lệ theo yêu cầu, không thêm lời giải thích, không dùng ```." });
     C.forEach(c => { const t = (c.parts || []).map(p => p.text || "").join("\n"); if (t) messages.push({ role: c.role === "model" ? "assistant" : "user", content: t }); });
-    let t = await cfLLM(env, messages, 1800);
+    let t = await llm(messages, 1800);
     if (json) { const m = t.match(/[\[{][\s\S]*[\]}]/); if (m) t = m[0]; }
     return new Response(gemOut(t), { headers: H });
   } catch (e) {
-    return new Response(JSON.stringify({ error: "Workers AI lỗi: " + String(e.message || e).slice(0, 200) }), { status: 502, headers: H });
+    return new Response(JSON.stringify({ error: (isCF ? "Workers AI lỗi: " : "Claude lỗi: ") + String(e.message || e).slice(0, 200) }), { status: 502, headers: H });
   }
 }
 let AI_HOW = "h", MODELS = null, MODELS_T = 0, AI_GOOD = "";
