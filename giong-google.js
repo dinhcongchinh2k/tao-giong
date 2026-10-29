@@ -6,7 +6,7 @@ const EDGE_M = { zh: "zh-CN-YunxiNeural", en: "en-US-AndrewNeural", vi: "vi-VN-N
 // giọng dự phòng (thử lần lượt nếu giọng chính lỗi) — để giọng nam luôn là giọng nam
 const BACKUP = { f: { zh: ["zh-CN-XiaoyiNeural"], en: ["en-US-JennyNeural", "en-US-AriaNeural"], vi: [] },
                  m: { zh: ["zh-CN-YunjianNeural", "zh-CN-YunyangNeural"], en: ["en-US-GuyNeural", "en-US-ChristopherNeural", "en-US-BrianNeural"], vi: [] } };
-const VERSION = "phiên bản 19 (Claude → Gemini → Cloudflare · phụ đề /phude · nghe giọng /nghe)";
+const VERSION = "phiên bản 20 (Claude → Gemini → Cloudflare · phụ đề /phude · nghe giọng /nghe · nhận tiếng nén)";
 const EDGE_RATE = { zh: "-10%", en: "-5%", vi: "+0%" };
 const GTX = { zh: "zh-CN", en: "en-US", vi: "vi" };
 const ALLOW = ["https://hoc-cung-chinh.pages.dev", "http://localhost", "http://127.0.0.1"];
@@ -21,7 +21,7 @@ const HOSTS = [
 
 function cors(origin) {
   const ok = !origin || ALLOW.some(a => origin === a || origin.startsWith(a + ":") || origin.endsWith(".hoc-cung-chinh.pages.dev"));
-  return { "Access-Control-Allow-Origin": ok ? (origin || "*") : ALLOW[0], "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type", "Vary": "Origin" };
+  return { "Access-Control-Allow-Origin": ok ? (origin || "*") : ALLOW[0], "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "86400", "Vary": "Origin" };
 }
 const hex = n => [...crypto.getRandomValues(new Uint8Array(n))].map(b => b.toString(16).padStart(2, "0")).join("");
 const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
@@ -325,11 +325,18 @@ async function textLLM(env, messages, maxTokens) {
   throw new Error("không có AI nào dùng được");
 }
 /* ---- 🎬 /phude: thân yêu cầu = âm thanh WAV dạng base64 (chữ thường, không bọc JSON để máy chủ khỏi tốn sức) ---- */
+/* nhận tiếng: thân là file nhị phân (f=bin, ví dụ Ogg Opus nén) hoặc chuỗi base64 */
+async function audioB64(request, url){
+  if (url.searchParams.get("f") !== "bin") return request.text();
+  const u = new Uint8Array(await request.arrayBuffer()); let s = "";
+  for (let i = 0; i < u.length; i += 32768) s += String.fromCharCode.apply(null, u.subarray(i, i + 32768));
+  return btoa(s);
+}
 async function phude(request, env, url, origin) {
   const H = { "Content-Type": "application/json; charset=utf-8", ...cors(origin) };
   if (!env.AI) return new Response(JSON.stringify({ error: "Máy chủ chưa bật AI của Cloudflare (Whisper) để nghe video" }), { status: 500, headers: H });
   try {
-    const b64 = await request.text();
+    const b64 = await audioB64(request, url);
     const w = await env.AI.run("@cf/openai/whisper-large-v3-turbo", { audio: b64, task: "transcribe", vad_filter: true });
     const lang = ((w.transcription_info || {}).language || "").toLowerCase();
     const segs = (w.segments || []).map(x => ({ s: +(+x.start).toFixed(2), e: +(+x.end).toFixed(2), t: String(x.text || "").trim() })).filter(x => x.t && !/^[\s.,!?…。，！？-]*$/.test(x.t));
@@ -354,7 +361,7 @@ async function nghe(request, env, url, origin) {
   const H = { "Content-Type": "application/json; charset=utf-8", ...cors(origin) };
   if (!env.AI) return new Response(JSON.stringify({ error: "Máy chủ chưa bật AI của Cloudflare (Whisper)" }), { status: 500, headers: H });
   try {
-    const l = url.searchParams.get("l"), b64 = await request.text();
+    const l = url.searchParams.get("l"), b64 = await audioB64(request, url);
     const w = await env.AI.run("@cf/openai/whisper-large-v3-turbo", { audio: b64, task: "transcribe", ...(["zh", "en", "vi"].includes(l) ? { language: l } : {}) });
     return new Response(JSON.stringify({ text: String(w.text || "").trim() }), { headers: H });
   } catch (e) { return new Response(JSON.stringify({ error: String(e.message || e).slice(0, 200) }), { status: 502, headers: H }); }
