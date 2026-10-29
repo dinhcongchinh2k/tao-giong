@@ -6,7 +6,7 @@ const EDGE_M = { zh: "zh-CN-YunxiNeural", en: "en-US-AndrewNeural", vi: "vi-VN-N
 // giọng dự phòng (thử lần lượt nếu giọng chính lỗi) — để giọng nam luôn là giọng nam
 const BACKUP = { f: { zh: ["zh-CN-XiaoyiNeural"], en: ["en-US-JennyNeural", "en-US-AriaNeural"], vi: [] },
                  m: { zh: ["zh-CN-YunjianNeural", "zh-CN-YunyangNeural"], en: ["en-US-GuyNeural", "en-US-ChristopherNeural", "en-US-BrianNeural"], vi: [] } };
-const VERSION = "phiên bản 14 (giọng Mỹ/Anh/Úc/Canada, dịch câu, AI Gemini tự chọn mẫu)";
+const VERSION = "phiên bản 15 (giọng Mỹ/Anh/Úc/Canada, dịch câu, AI Gemini + AI Cloudflare)";
 const EDGE_RATE = { zh: "-10%", en: "-5%", vi: "+0%" };
 const GTX = { zh: "zh-CN", en: "en-US", vi: "vi" };
 const ALLOW = ["https://hoc-cung-chinh.pages.dev", "http://localhost", "http://127.0.0.1"];
@@ -232,6 +232,8 @@ async function ai(request, env, url, origin) {
     const out = [VERSION, "Khóa: " + env.GEMINI_KEY.slice(0, 4) + "… (" + env.GEMINI_KEY.length + " ký tự)"];
     let list = []; try { list = await geminiModels(env, true); } catch (e) { out.push("Không lấy được danh sách mẫu AI: " + (e.message || e)); }
     out.push("Mẫu AI dùng được (xếp theo ưu tiên): " + (list.slice(0, 8).join(", ") || "(không có)"));
+    if (env.AI) { try { const t = await cfLLM(env, [{ role: "user", content: "Reply with the single word OK." }], 20); out.push("AI của Cloudflare (Workers AI) → " + t.trim().slice(0, 60)); } catch (e) { out.push("AI của Cloudflare (Workers AI) → lỗi " + String(e.message || e).slice(0, 160)); } }
+    else out.push("AI của Cloudflare (Workers AI): chưa bật (cần cập nhật qua GitHub)");
     for (const model of list.slice(0, 3)) for (const how of [AI_HOW]) {
       const r = await call(model, JSON.stringify({ contents: [{ role: "user", parts: [{ text: "Reply with the single word OK." }] }] }), how);
       const t = await r.text(); let msg = t;
@@ -242,12 +244,14 @@ async function ai(request, env, url, origin) {
     return new Response(out.join("\n"), { headers: { "Content-Type": "text/plain; charset=utf-8", ...cors(origin) } });
   }
   const body = await request.text();
+  if (env.AI && GEM_BLOCKED > Date.now()) return cfAI(body, env, H);  // Gemini đang chặn khu vực: dùng AI của Cloudflare
   const first = AI_GOOD && AI_GOOD !== m ? AI_GOOD : m;  // mẫu vừa chạy tốt thì dùng trước
   let r = first === "auto" ? null : await call(first, body, AI_HOW);
   if (r && r.ok) AI_GOOD = first;
   if ((r.status === 401 || r.status === 403 || r.status === 400) && AI_HOW === "h") {  // khóa AQ… bị từ chối ở header: thử gửi qua ?key=
     const t = await r.text();
     if (/API key|ACCESS_TOKEN|UNAUTHENTICATED|PERMISSION|credential/i.test(t)) { const r2 = await call(m, body, "q"); if (r2.ok) AI_HOW = "q"; r = r2; }
+    else if (env.AI && /location is not supported|FAILED_PRECONDITION/i.test(t)) { GEM_BLOCKED = Date.now() + 3600e3; return cfAI(body, env, H); }
     else return new Response(t, { status: r.status, headers: H });
   }
   if (!r || r.status === 404 || r.status === 503 || r.status === 429 || r.status >= 500) {  // mẫu đã ngừng / quá tải: tự chọn mẫu khác tài khoản được dùng
@@ -258,9 +262,65 @@ async function ai(request, env, url, origin) {
       if (!r) r = r2;
       if (r2.status !== 404 && r2.status !== 503 && r2.status !== 429 && r2.status < 500) { r = r2; break; }
     }
-    if (!r) return new Response(JSON.stringify({ error: "Không có mẫu AI nào dùng được" }), { status: 503, headers: H });
+    if (!r) { if (env.AI) return cfAI(body, env, H); return new Response(JSON.stringify({ error: "Không có mẫu AI nào dùng được" }), { status: 503, headers: H }); }
+  }
+  if (!r.ok) {
+    const t = await r.text();
+    if (env.AI && (/location is not supported|FAILED_PRECONDITION/i.test(t) || r.status === 404 || r.status === 429 || r.status >= 500)) {
+      if (/location is not supported/i.test(t)) GEM_BLOCKED = Date.now() + 3600e3;
+      return cfAI(body, env, H);
+    }
+    return new Response(t, { status: r.status, headers: H });
   }
   return new Response(r.body, { status: r.status, headers: H });
+}
+let GEM_BLOCKED = 0;
+// ---- AI của Cloudflare (Workers AI, miễn phí ~10.000 đơn vị/ngày). Trả về đúng dạng kết quả của Gemini ----
+const CF_LLM = ["@cf/google/gemma-3-12b-it", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"];
+async function cfLLM(env, messages, maxTokens) {
+  let err;
+  for (const m of CF_LLM) {
+    try {
+      const o = await env.AI.run(m, { messages, max_tokens: maxTokens || 1500, temperature: 0.6 });
+      const t = typeof o.response === "string" ? o.response : JSON.stringify(o.response);
+      if (t && t.trim()) return t;
+    } catch (e) { err = e; }
+  }
+  throw err || new Error("Workers AI không trả lời");
+}
+const gemOut = text => JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text }] } }], via: "workers-ai" });
+async function cfAI(bodyStr, env, H) {
+  try {
+    const b = JSON.parse(bodyStr), C = b.contents || [];
+    const parts = C.flatMap(c => c.parts || []), media = parts.find(p => p.inlineData || p.inline_data);
+    const promptText = parts.filter(p => p.text).map(p => p.text).join("\n");
+    if (media) {  // phụ đề video: Whisper nghe -> LLM dịch + pinyin
+      const d = media.inlineData || media.inline_data;
+      const w = await env.AI.run("@cf/openai/whisper-large-v3-turbo", { audio: d.data, task: "transcribe", vad_filter: true });
+      const segs = (w.segments || []).map(x => ({ s: +(+x.start).toFixed(2), e: +(+x.end).toFixed(2), t: String(x.text || "").trim() })).filter(x => x.t);
+      if (!segs.length) return new Response(gemOut("[]"), { headers: H });
+      const zh = /pinyin đầy đủ/.test(promptText);
+      let arr = null;
+      for (let k = 0; k < 2 && !arr; k++) {
+        try {
+          const t = await cfLLM(env, [{ role: "system", content: "Bạn là trợ lý làm phụ đề. Chỉ trả lời bằng JSON hợp lệ, không thêm chữ nào khác." },
+            { role: "user", content: `Dưới đây là các câu phụ đề (mảng JSON, có thời gian s/e). Với MỖI câu, trả về object {"s","e","t","p","v"}: giữ nguyên s và e; t = ${zh ? "lời gốc viết bằng chữ Hán giản thể (sửa lỗi nghe nhầm nếu rõ ràng)" : "lời gốc (sửa lỗi chính tả nếu rõ ràng)"}; p = ${zh ? "pinyin đầy đủ có dấu thanh, viết cách theo từ" : "chuỗi rỗng"}; v = dịch sang tiếng Việt tự nhiên. Trả về ĐÚNG một mảng JSON có cùng số phần tử.\n${JSON.stringify(segs)}` }], 3500);
+          const m = t.match(/\[[\s\S]*\]/); const a = m && JSON.parse(m[0]);
+          if (Array.isArray(a) && a.length) arr = a.map((x, i) => ({ s: segs[i] ? segs[i].s : +x.s, e: segs[i] ? segs[i].e : +x.e, t: String(x.t || (segs[i] || {}).t || ""), p: String(x.p || ""), v: String(x.v || "") }));
+        } catch (e) {}
+      }
+      return new Response(gemOut(JSON.stringify(arr || segs.map(x => ({ ...x, p: "", v: "" })))), { headers: H });
+    }
+    const json = b.generationConfig && /json/.test(b.generationConfig.responseMimeType || "");
+    const messages = [];
+    if (json) messages.push({ role: "system", content: "Luôn trả lời bằng đúng MỘT đối tượng/mảng JSON hợp lệ theo yêu cầu, không thêm lời giải thích, không dùng ```." });
+    C.forEach(c => { const t = (c.parts || []).map(p => p.text || "").join("\n"); if (t) messages.push({ role: c.role === "model" ? "assistant" : "user", content: t }); });
+    let t = await cfLLM(env, messages, 1800);
+    if (json) { const m = t.match(/[\[{][\s\S]*[\]}]/); if (m) t = m[0]; }
+    return new Response(gemOut(t), { headers: H });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: "Workers AI lỗi: " + String(e.message || e).slice(0, 200) }), { status: 502, headers: H });
+  }
 }
 let AI_HOW = "h", MODELS = null, MODELS_T = 0, AI_GOOD = "";
 async function geminiModels(env, fresh) {
