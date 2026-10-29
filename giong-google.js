@@ -6,7 +6,7 @@ const EDGE_M = { zh: "zh-CN-YunxiNeural", en: "en-US-AndrewNeural", vi: "vi-VN-N
 // giọng dự phòng (thử lần lượt nếu giọng chính lỗi) — để giọng nam luôn là giọng nam
 const BACKUP = { f: { zh: ["zh-CN-XiaoyiNeural"], en: ["en-US-JennyNeural", "en-US-AriaNeural"], vi: [] },
                  m: { zh: ["zh-CN-YunjianNeural", "zh-CN-YunyangNeural"], en: ["en-US-GuyNeural", "en-US-ChristopherNeural", "en-US-BrianNeural"], vi: [] } };
-const VERSION = "phiên bản 15 (giọng Mỹ/Anh/Úc/Canada, dịch câu, AI Gemini + AI Cloudflare)";
+const VERSION = "phiên bản 16 (AI nhanh hơn: bỏ qua mẫu quá tải, Gemini + AI Cloudflare)";
 const EDGE_RATE = { zh: "-10%", en: "-5%", vi: "+0%" };
 const GTX = { zh: "zh-CN", en: "en-US", vi: "vi" };
 const ALLOW = ["https://hoc-cung-chinh.pages.dev", "http://localhost", "http://127.0.0.1"];
@@ -245,35 +245,46 @@ async function ai(request, env, url, origin) {
   }
   const body = await request.text();
   if (env.AI && GEM_BLOCKED > Date.now()) return cfAI(body, env, H);  // Gemini đang chặn khu vực: dùng AI của Cloudflare
-  const first = AI_GOOD && AI_GOOD !== m ? AI_GOOD : m;  // mẫu vừa chạy tốt thì dùng trước
-  let r = first === "auto" ? null : await call(first, body, AI_HOW);
-  if (r && r.ok) AI_GOOD = first;
-  if ((r.status === 401 || r.status === 403 || r.status === 400) && AI_HOW === "h") {  // khóa AQ… bị từ chối ở header: thử gửi qua ?key=
-    const t = await r.text();
-    if (/API key|ACCESS_TOKEN|UNAUTHENTICATED|PERMISSION|credential/i.test(t)) { const r2 = await call(m, body, "q"); if (r2.ok) AI_HOW = "q"; r = r2; }
-    else if (env.AI && /location is not supported|FAILED_PRECONDITION/i.test(t)) { GEM_BLOCKED = Date.now() + 3600e3; return cfAI(body, env, H); }
-    else return new Response(t, { status: r.status, headers: H });
-  }
-  if (!r || r.status === 404 || r.status === 503 || r.status === 429 || r.status >= 500) {  // mẫu đã ngừng / quá tải: tự chọn mẫu khác tài khoản được dùng
-    let list = []; try { list = await geminiModels(env); } catch (e) {}
-    for (const alt of list.filter(x => x !== first).slice(0, 4)) {
-      const r2 = await call(alt, body, AI_HOW);
-      if (r2.ok) { r = r2; AI_GOOD = alt; break; }
-      if (!r) r = r2;
-      if (r2.status !== 404 && r2.status !== 503 && r2.status !== 429 && r2.status < 500) { r = r2; break; }
+  const big = body.length > 150000;  // có âm thanh (phụ đề video)
+  const callT = async (model, bd, how) => {  // gọi có giới hạn thời gian; quá giờ -> null
+    const ac = new AbortController(), tm = setTimeout(() => ac.abort(), big ? 60000 : 20000);
+    try { return await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent" + (how === "q" ? "?key=" + encodeURIComponent(env.GEMINI_KEY) : ""), {
+      method: "POST", signal: ac.signal, headers: how === "q" ? { "Content-Type": "application/json" } : { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_KEY }, body: bd }); }
+    catch (e) { return null; } finally { clearTimeout(tm); }
+  };
+  const think = model => {  // chat: bớt "suy nghĩ" để trả lời nhanh
+    if (big || NO_THINK) return body;
+    try { const j = JSON.parse(body); const gc = j.generationConfig = j.generationConfig || {};
+      if (!gc.thinkingConfig) gc.thinkingConfig = /gemini-2\.5/.test(model) ? { thinkingBudget: 0 } : { thinkingLevel: "low" };
+      return JSON.stringify(j); } catch (e) { return body; }
+  };
+  let list = [];
+  try { list = await geminiModels(env); }
+  catch (e) { if (/location is not supported/i.test(String(e.message))) { GEM_BLOCKED = Date.now() + 3600e3; if (env.AI) return cfAI(body, env, H); } }
+  const now = Date.now();
+  let order = [...new Set([AI_GOOD, ...list, m].filter(x => x && x !== "auto"))].filter(x => !(BAD[x] > now));
+  if (!order.length) order = [...new Set([...list.slice(0, 2), m].filter(x => x && x !== "auto"))];
+  let last = null;
+  for (const model of order.slice(0, 4)) {
+    let bd = think(model), r = await callT(model, bd, AI_HOW);
+    if (r && r.status === 400 && !NO_THINK && !big) {  // mẫu không nhận cài đặt "suy nghĩ": gửi lại bản gốc
+      const t = await r.clone().text();
+      if (/thinking/i.test(t)) { NO_THINK = true; bd = body; r = await callT(model, bd, AI_HOW); }
     }
-    if (!r) { if (env.AI) return cfAI(body, env, H); return new Response(JSON.stringify({ error: "Không có mẫu AI nào dùng được" }), { status: 503, headers: H }); }
-  }
-  if (!r.ok) {
-    const t = await r.text();
-    if (env.AI && (/location is not supported|FAILED_PRECONDITION/i.test(t) || r.status === 404 || r.status === 429 || r.status >= 500)) {
-      if (/location is not supported/i.test(t)) GEM_BLOCKED = Date.now() + 3600e3;
-      return cfAI(body, env, H);
+    if (r && (r.status === 401 || r.status === 403) && AI_HOW === "h") {  // khóa AQ… bị từ chối ở header: thử ?key=
+      const r2 = await callT(model, bd, "q"); if (r2 && r2.ok) AI_HOW = "q"; r = r2 || r;
     }
+    if (!r) { BAD[model] = now + 600e3; last = { status: 504, t: JSON.stringify({ error: model + " quá lâu không trả lời" }) }; continue; }
+    if (r.ok) { AI_GOOD = model; return new Response(r.body, { status: 200, headers: H }); }
+    const t = await r.text(); last = { status: r.status, t };
+    if (/location is not supported/i.test(t)) { GEM_BLOCKED = Date.now() + 3600e3; if (env.AI) return cfAI(body, env, H); break; }
+    if (r.status === 404 || r.status === 429 || r.status >= 500) { BAD[model] = now + (r.status === 404 ? 86400e3 : 600e3); if (AI_GOOD === model) AI_GOOD = ""; continue; }
     return new Response(t, { status: r.status, headers: H });
   }
-  return new Response(r.body, { status: r.status, headers: H });
+  if (env.AI) return cfAI(body, env, H);
+  return new Response(last ? last.t : JSON.stringify({ error: "Không có mẫu AI nào dùng được" }), { status: last ? last.status : 503, headers: H });
 }
+let NO_THINK = false; const BAD = {};
 let GEM_BLOCKED = 0;
 // ---- AI của Cloudflare (Workers AI, miễn phí ~10.000 đơn vị/ngày). Trả về đúng dạng kết quả của Gemini ----
 const CF_LLM = ["@cf/google/gemma-3-12b-it", "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"];
