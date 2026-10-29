@@ -72,6 +72,37 @@ def to_opus(src):
         subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", src, "-ac", "1", "-ar", "24000", "-c:a", "libopus", "-b:a", "20k", dst], capture_output=True)
     return os.path.exists(dst)
 
+VI_RE = re.compile(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", re.I)
+CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+def harvest(html, en):
+    """Quét toàn bộ dữ liệu trong trang để lấy mọi câu/từ web có thể đọc (bài tập, thi thử, trò chơi, ngữ pháp, HSKK...)."""
+    script = html[html.index("<script>"):]
+    out = []
+    def ok_zh(s):
+        core = re.sub(r"[\s，。！？、：；“”‘’（）…—\-.,!?]", "", s); cj = len(CJK_RE.findall(s))
+        return cj and cj >= 0.5 * len(core) and len(s) <= 80
+    def ok_en(s):
+        if VI_RE.search(s) or not re.search(r"[A-Za-z]", s) or re.search(r"[<>{}=_/\\|#@$`]", s) or re.search(r"[ˈəɪʊʌæɔŋθðʃʒː]", s): return False
+        return bool(re.match(r"^[A-Za-z\"'(]", s)) and len(s) <= 200
+    lines = script.split("\n")
+    for l in lines:
+        long = len(l) > 3000
+        for m in re.finditer(r'"((?:[^"\\\n]|\\.){1,220})"', l):
+            try: s = json.loads('"' + m.group(1) + '"').strip()
+            except Exception: continue
+            if not s: continue
+            if en:
+                if (long and ok_en(s)) or (ok_en(s) and " " in s and re.search(r"[.?!]$", s)): out.append(s)
+            elif ok_zh(s): out.append(s)
+        if long:  # mảng các mảnh câu -> ghép lại thành câu
+            for m in re.finditer(r'\[((?:"(?:[^"\\]|\\.)*",?\s*){2,30})\]', l):
+                try: arr = json.loads("[" + m.group(1).rstrip(", ") + "]")
+                except Exception: continue
+                if en and all(isinstance(x, str) and ok_en(x) for x in arr): out.append(" ".join(x.strip() for x in arr))
+                if not en and all(isinstance(x, str) and ok_zh(x) for x in arr): out.append("".join(arr))
+    if en: out += [chr(c) for c in range(65, 91)]  # bảng chữ cái
+    return out
+
 def main():
     shutil.rmtree(OUT, ignore_errors=True); shutil.rmtree(OFF, ignore_errors=True); os.makedirs(OFF)
     with zipfile.ZipFile(SRC) as z: z.extractall(OUT)
@@ -95,6 +126,7 @@ def main():
         sents += [l["zh"] for c in grab("SPEAK") for t in c.get("topics", []) for L in t.get("lessons", []) for l in L.get("lines", [])]
         sents += [d[1] for b in grab("COURSE") for L in b.get("lessons", []) for d in L.get("d", []) if len(d) > 1]
         if cfg["en"]: sents += [r[4] for r in raw if len(r) > 4 and r[4]]
+        sents += harvest(html, cfg["en"])
         ns = 0
         for t in sents:
             k = norm(t, cfg["en"])
