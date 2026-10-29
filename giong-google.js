@@ -6,7 +6,7 @@ const EDGE_M = { zh: "zh-CN-YunxiNeural", en: "en-US-AndrewNeural", vi: "vi-VN-N
 // giọng dự phòng (thử lần lượt nếu giọng chính lỗi) — để giọng nam luôn là giọng nam
 const BACKUP = { f: { zh: ["zh-CN-XiaoyiNeural"], en: ["en-US-JennyNeural", "en-US-AriaNeural"], vi: [] },
                  m: { zh: ["zh-CN-YunjianNeural", "zh-CN-YunyangNeural"], en: ["en-US-GuyNeural", "en-US-ChristopherNeural", "en-US-BrianNeural"], vi: [] } };
-const VERSION = "phiên bản 13 (giọng Mỹ/Anh/Úc/Canada, dịch câu, AI Gemini + kiểm tra AI)";
+const VERSION = "phiên bản 14 (giọng Mỹ/Anh/Úc/Canada, dịch câu, AI Gemini tự chọn mẫu)";
 const EDGE_RATE = { zh: "-10%", en: "-5%", vi: "+0%" };
 const GTX = { zh: "zh-CN", en: "en-US", vi: "vi" };
 const ALLOW = ["https://hoc-cung-chinh.pages.dev", "http://localhost", "http://127.0.0.1"];
@@ -225,12 +225,14 @@ async function ai(request, env, url, origin) {
   const H = { "Content-Type": "application/json; charset=utf-8", ...cors(origin) };
   if (!env.GEMINI_KEY) return new Response(JSON.stringify({ error: "Chưa cài khóa GEMINI_KEY" }), { status: 500, headers: H });
   const m = url.searchParams.get("m") || "gemini-2.5-flash";
-  if (!/^(gemini|gemma)-[\w.-]+$/.test(m)) return new Response(JSON.stringify({ error: "model" }), { status: 400, headers: H });
+  if (!/^((gemini|gemma)-[\w.-]+|auto)$/.test(m)) return new Response(JSON.stringify({ error: "model" }), { status: 400, headers: H });
   const call = (model, body, how) => fetch("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent" + (how === "q" ? "?key=" + encodeURIComponent(env.GEMINI_KEY) : ""), {
     method: "POST", headers: how === "q" ? { "Content-Type": "application/json" } : { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_KEY }, body });
   if (request.method !== "POST") {  // kiểm tra: /ai?xem=1 -> thử gọi Gemini và báo kết quả
     const out = [VERSION, "Khóa: " + env.GEMINI_KEY.slice(0, 4) + "… (" + env.GEMINI_KEY.length + " ký tự)"];
-    for (const model of ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash", "gemini-2.5-flash-lite"]) for (const how of ["h", "q"]) {
+    let list = []; try { list = await geminiModels(env, true); } catch (e) { out.push("Không lấy được danh sách mẫu AI: " + (e.message || e)); }
+    out.push("Mẫu AI dùng được (xếp theo ưu tiên): " + (list.slice(0, 8).join(", ") || "(không có)"));
+    for (const model of list.slice(0, 3)) for (const how of [AI_HOW]) {
       const r = await call(model, JSON.stringify({ contents: [{ role: "user", parts: [{ text: "Reply with the single word OK." }] }] }), how);
       const t = await r.text(); let msg = t;
       try { const j = JSON.parse(t); msg = j.error ? (j.error.status + ": " + j.error.message) : ((((j.candidates || [])[0] || {}).content || {}).parts || []).map(x => x.text).join("").trim(); } catch (e) {}
@@ -240,15 +242,41 @@ async function ai(request, env, url, origin) {
     return new Response(out.join("\n"), { headers: { "Content-Type": "text/plain; charset=utf-8", ...cors(origin) } });
   }
   const body = await request.text();
-  let r = await call(m, body, AI_HOW);
+  const first = AI_GOOD && AI_GOOD !== m ? AI_GOOD : m;  // mẫu vừa chạy tốt thì dùng trước
+  let r = first === "auto" ? null : await call(first, body, AI_HOW);
+  if (r && r.ok) AI_GOOD = first;
   if ((r.status === 401 || r.status === 403 || r.status === 400) && AI_HOW === "h") {  // khóa AQ… bị từ chối ở header: thử gửi qua ?key=
     const t = await r.text();
     if (/API key|ACCESS_TOKEN|UNAUTHENTICATED|PERMISSION|credential/i.test(t)) { const r2 = await call(m, body, "q"); if (r2.ok) AI_HOW = "q"; r = r2; }
     else return new Response(t, { status: r.status, headers: H });
   }
+  if (!r || r.status === 404 || r.status === 503 || r.status === 429 || r.status >= 500) {  // mẫu đã ngừng / quá tải: tự chọn mẫu khác tài khoản được dùng
+    let list = []; try { list = await geminiModels(env); } catch (e) {}
+    for (const alt of list.filter(x => x !== first).slice(0, 4)) {
+      const r2 = await call(alt, body, AI_HOW);
+      if (r2.ok) { r = r2; AI_GOOD = alt; break; }
+      if (!r) r = r2;
+      if (r2.status !== 404 && r2.status !== 503 && r2.status !== 429 && r2.status < 500) { r = r2; break; }
+    }
+    if (!r) return new Response(JSON.stringify({ error: "Không có mẫu AI nào dùng được" }), { status: 503, headers: H });
+  }
   return new Response(r.body, { status: r.status, headers: H });
 }
-let AI_HOW = "h";
+let AI_HOW = "h", MODELS = null, MODELS_T = 0, AI_GOOD = "";
+async function geminiModels(env, fresh) {
+  if (MODELS && !fresh && Date.now() - MODELS_T < 6 * 3600e3) return MODELS;
+  const u = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200" + (AI_HOW === "q" ? "&key=" + encodeURIComponent(env.GEMINI_KEY) : "");
+  const r = await fetch(u, { headers: AI_HOW === "q" ? {} : { "x-goog-api-key": env.GEMINI_KEY } });
+  if (!r.ok) throw new Error("list " + r.status + " " + (await r.text()).slice(0, 120));
+  const j = await r.json();
+  const bad = /(image|tts|audio|live|embedding|vision|thinking-exp|robotics|computer|native|preview-0|learnlm|aqa|veo|imagen|nano|banana)/i;
+  const names = (j.models || []).filter(x => (x.supportedGenerationMethods || []).includes("generateContent")).map(x => x.name.replace(/^models\//, ""))
+    .filter(n => /^gemini-/.test(n) && /flash/.test(n) && !bad.test(n));
+  const ver = n => parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || (/latest/.test(n) ? 99 : 0));
+  const score = n => (/lite/.test(n) ? 0 : 1000) + (/latest/.test(n) ? 5 : ver(n) * 10) - (/preview|exp/.test(n) ? 3 : 0);
+  MODELS = [...new Set(names)].sort((a, b) => score(b) - score(a)); MODELS_T = Date.now();
+  return MODELS;
+}
 
 export default {
   async fetch(request, env, ctx) {
