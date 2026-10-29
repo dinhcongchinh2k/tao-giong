@@ -1,0 +1,20 @@
+name: Cap nhat web (giu giong)
+on:
+  workflow_dispatch:
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Lay web dang chay + ap ban sua moi
+        run: python cap_nhat_web.py
+      - name: Dua web len Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: b3258f4c09eb4e9122d7639252b680b8
+          command: pages deploy out --project-name=hoc-cung-chinh --branch=main --commit-dirty=true
