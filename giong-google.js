@@ -6,10 +6,10 @@ const EDGE_M = { zh: "zh-CN-YunxiNeural", en: "en-US-AndrewNeural", vi: "vi-VN-N
 // giọng dự phòng (thử lần lượt nếu giọng chính lỗi) — để giọng nam luôn là giọng nam
 const BACKUP = { f: { zh: ["zh-CN-XiaoyiNeural"], en: ["en-US-JennyNeural", "en-US-AriaNeural"], vi: [] },
                  m: { zh: ["zh-CN-YunjianNeural", "zh-CN-YunyangNeural"], en: ["en-US-GuyNeural", "en-US-ChristopherNeural", "en-US-BrianNeural"], vi: [] } };
-const VERSION = "phiên bản 20 (Claude → Gemini → Cloudflare · phụ đề /phude · nghe giọng /nghe · nhận tiếng nén)";
+const VERSION = "phiên bản 21 (Claude → Gemini → Cloudflare · phụ đề /phude dịch Việt/Trung · nghe giọng /nghe · nhận tiếng nén)";
 const EDGE_RATE = { zh: "-10%", en: "-5%", vi: "+0%" };
 const GTX = { zh: "zh-CN", en: "en-US", vi: "vi" };
-const ALLOW = ["https://hoc-cung-chinh.pages.dev", "http://localhost", "http://127.0.0.1"];
+const ALLOW = ["https://hoc-cung-chinh.pages.dev", "https://xue-yuenanyu.pages.dev", "http://localhost", "http://127.0.0.1"];
 
 const TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const CHROMIUM = "143.0.3650.75";
@@ -20,7 +20,7 @@ const HOSTS = [
 ];
 
 function cors(origin) {
-  const ok = !origin || ALLOW.some(a => origin === a || origin.startsWith(a + ":") || origin.endsWith(".hoc-cung-chinh.pages.dev"));
+  const ok = !origin || ALLOW.some(a => origin === a || origin.startsWith(a + ":") || origin.endsWith(".hoc-cung-chinh.pages.dev") || origin.endsWith(".xue-yuenanyu.pages.dev"));
   return { "Access-Control-Allow-Origin": ok ? (origin || "*") : ALLOW[0], "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "86400", "Vary": "Origin" };
 }
 const hex = n => [...crypto.getRandomValues(new Uint8Array(n))].map(b => b.toString(16).padStart(2, "0")).join("");
@@ -342,10 +342,12 @@ async function phude(request, env, url, origin) {
     const segs = (w.segments || []).map(x => ({ s: +(+x.start).toFixed(2), e: +(+x.end).toFixed(2), t: String(x.text || "").trim() })).filter(x => x.t && !/^[\s.,!?…。，！？-]*$/.test(x.t));
     if (!segs.length) return new Response(JSON.stringify({ segs: [], lang }), { headers: H });
     const zh = lang.startsWith("zh") || segs.some(x => /[\u4e00-\u9fff]/.test(x.t));
+    const toZh = url.searchParams.get("t") === "zh";  // web học tiếng Việt cho người Trung: dịch sang tiếng Trung
     let arr = null;
     for (let k = 0; k < 2 && !arr; k++) {
       try {
-        const t = await textLLM(env, [{ role: "system", content: "Bạn là trợ lý làm phụ đề cho người Việt học ngoại ngữ. Chỉ trả lời bằng JSON hợp lệ, không thêm chữ nào khác." },
+        const t = toZh ? await textLLM(env, [{ role: "system", content: "你是字幕助手，帮助中国人学习越南语。只回答合法的 JSON，不要添加任何其他文字。" },
+          { role: "user", content: `下面的字幕句子（JSON 数组，带时间 s/e）是机器从视频里听写的。对每一句，返回对象 {"s","e","t","p","v"}：s 和 e 保持不变；t = 原文（${zh ? "中文请用简体字" : "越南语请补全正确的声调符号、改正明显的听写错误、加上标点"}）；p = ${zh ? "带声调的拼音" : "空字符串"}；v = ${zh ? "翻译成自然的越南语" : "翻译成自然、通顺的简体中文"}。只返回一个 JSON 数组，元素个数和顺序都与输入相同。\n${JSON.stringify(segs)}` }], 4000) : await textLLM(env, [{ role: "system", content: "Bạn là trợ lý làm phụ đề cho người Việt học ngoại ngữ. Chỉ trả lời bằng JSON hợp lệ, không thêm chữ nào khác." },
           { role: "user", content: `Các câu phụ đề dưới đây (mảng JSON, có thời gian s/e) được máy nghe từ video${zh ? " tiếng Trung" : ""}. Với MỖI câu, trả về object {"s","e","t","p","v"}: giữ nguyên s và e; t = ${zh ? "lời gốc viết bằng chữ Hán GIẢN THỂ (đổi phồn thể sang giản thể, sửa lỗi nghe nhầm nếu rõ ràng, thêm dấu câu)" : "lời gốc (sửa lỗi chính tả nếu rõ ràng, thêm dấu câu)"}; p = ${zh ? "pinyin đầy đủ có dấu thanh, viết cách theo từ" : "chuỗi rỗng"}; v = dịch sang tiếng Việt tự nhiên, dễ hiểu. Trả về ĐÚNG một mảng JSON có cùng số phần tử, cùng thứ tự.\n${JSON.stringify(segs)}` }], 4000);
         const m = t.match(/\[[\s\S]*\]/); const a = m && JSON.parse(m[0]);
         if (Array.isArray(a) && a.length) arr = segs.map((x, i) => ({ s: x.s, e: x.e, t: String((a[i] || {}).t || x.t), p: String((a[i] || {}).p || ""), v: String((a[i] || {}).v || "") }));
