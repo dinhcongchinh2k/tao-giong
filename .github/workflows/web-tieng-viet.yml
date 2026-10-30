@@ -1,0 +1,27 @@
+name: Web tieng Viet (xue-yuenanyu)
+on:
+  workflow_dispatch:
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Giai nen web
+        run: |
+          rm -rf out_viet && mkdir out_viet
+          unzip -q xue-yuenanyu-web.zip -d out_viet
+          ls -la out_viet out_viet/dict
+      - name: Tao du an Cloudflare Pages (chi can lan dau, lan sau bao loi cung khong sao)
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: b3258f4c09eb4e9122d7639252b680b8
+          command: pages project create xue-yuenanyu --production-branch=main
+      - name: Dua web len xue-yuenanyu.pages.dev
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: b3258f4c09eb4e9122d7639252b680b8
+          command: pages deploy out_viet --project-name=xue-yuenanyu --branch=main --commit-dirty=true
