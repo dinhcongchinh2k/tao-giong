@@ -6,7 +6,7 @@ const EDGE_M = { zh: "zh-CN-YunxiNeural", en: "en-US-AndrewNeural", vi: "vi-VN-N
 // giọng dự phòng (thử lần lượt nếu giọng chính lỗi) — để giọng nam luôn là giọng nam
 const BACKUP = { f: { zh: ["zh-CN-XiaoyiNeural"], en: ["en-US-JennyNeural", "en-US-AriaNeural"], vi: [] },
                  m: { zh: ["zh-CN-YunjianNeural", "zh-CN-YunyangNeural"], en: ["en-US-GuyNeural", "en-US-ChristopherNeural", "en-US-BrianNeural"], vi: [] } };
-const VERSION = "phiên bản 21 (Claude → Gemini → Cloudflare · phụ đề /phude dịch Việt/Trung · nghe giọng /nghe · nhận tiếng nén)";
+const VERSION = "phiên bản 22 (AI trả lời dạng dòng chảy /ai?stream=1 · Claude → Gemini → Cloudflare · phụ đề /phude dịch Việt/Trung · nghe giọng /nghe · nhận tiếng nén)";
 const EDGE_RATE = { zh: "-10%", en: "-5%", vi: "+0%" };
 const GTX = { zh: "zh-CN", en: "en-US", vi: "vi" };
 const ALLOW = ["https://hoc-cung-chinh.pages.dev", "https://xue-yuenanyu.pages.dev", "http://localhost", "http://127.0.0.1"];
@@ -299,6 +299,73 @@ async function ai(request, env, url, origin) {
   return new Response(last ? last.t : JSON.stringify({ error: "Không có mẫu AI nào dùng được" }), { status: last ? last.status : 503, headers: H });
 }
 let NO_THINK = false, CL_FAIL = 0; const BAD = {};
+/* ---- AI trả lời dạng dòng chảy (chữ hiện ra dần, trang đọc được câu trả lời sớm) ----
+   Nhận cùng dạng body như /ai (kiểu Gemini), trả về chữ thuần chảy dần. Thứ tự: Claude -> Gemini -> (không dòng chảy) Cloudflare. */
+async function aiStream(request, env, url, origin) {
+  const H = { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", ...cors(origin) };
+  const bodyStr = await request.text();
+  let b; try { b = JSON.parse(bodyStr); } catch (e) { return new Response("bad body", { status: 400, headers: H }); }
+  const json = b.generationConfig && /json/.test(b.generationConfig.responseMimeType || "");
+  const C = b.contents || [];
+  const pipe = async (src, parse) => {  // đọc SSE từ nhà cung cấp -> ghi chữ ra cho trang
+    const { readable, writable } = new TransformStream(), w = writable.getWriter(), enc = new TextEncoder();
+    (async () => {
+      const rd = src.body.getReader(), dec = new TextDecoder(); let buf = "";
+      try {
+        for (;;) {
+          const { done, value } = await rd.read(); if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i; while ((i = buf.indexOf("\n")) >= 0) { const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+            if (!line.startsWith("data:")) continue; const d = line.slice(5).trim(); if (!d || d === "[DONE]") continue;
+            try { const t = parse(JSON.parse(d)); if (t) await w.write(enc.encode(t)); } catch (e) {} }
+        }
+      } catch (e) {} finally { try { await w.close(); } catch (e) {} }
+    })();
+    return new Response(readable, { headers: H });
+  };
+  // 1) Claude
+  if (env.CLAUDE_KEY && CL_FAIL < Date.now()) {
+    const sys = [json ? "Luôn trả lời bằng đúng MỘT đối tượng JSON hợp lệ theo yêu cầu, không thêm lời giải thích, không dùng ```." : ""].filter(Boolean).join("\n");
+    const msgs = [];
+    C.forEach(c => { const t = (c.parts || []).map(p => p.text || "").join("\n"); if (!t) return; const role = c.role === "model" ? "assistant" : "user";
+      if (msgs.length && msgs[msgs.length - 1].role === role) msgs[msgs.length - 1].content += "\n" + t; else msgs.push({ role, content: t }); });
+    if (!msgs.length || msgs[0].role !== "user") msgs.unshift({ role: "user", content: "(Bắt đầu.)" });
+    if (msgs[msgs.length - 1].role !== "user") msgs.push({ role: "user", content: "(Tiếp tục.)" });
+    try {
+      const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": env.CLAUDE_KEY, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({ model: env.CLAUDE_MODEL || "claude-haiku-5-5", max_tokens: 900, stream: true, ...(sys ? { system: sys } : {}), messages: msgs }) });
+      if (r.ok) return pipe(r, j => j.type === "content_block_delta" && j.delta && j.delta.type === "text_delta" ? j.delta.text : "");
+      const t = await r.text(); CL_FAIL = /credit|balance|billing|quota|rate|401|403/i.test(t) ? Date.now() + 3600e3 : Date.now() + 120e3;
+    } catch (e) { CL_FAIL = Date.now() + 120e3; }
+  }
+  // 2) Gemini (tắt "suy nghĩ" cho nhanh)
+  if (env.GEMINI_KEY && !(GEM_BLOCKED > Date.now())) {
+    let list = []; try { list = await geminiModels(env); } catch (e) {}
+    const now = Date.now();
+    const order = [...new Set([AI_GOOD, ...list, url.searchParams.get("m") || "gemini-2.5-flash"].filter(x => x && x !== "auto"))].filter(x => !(BAD[x] > now)).slice(0, 3);
+    for (const model of order) {
+      const j = JSON.parse(bodyStr); const gc = j.generationConfig = j.generationConfig || {};
+      if (!NO_THINK && !gc.thinkingConfig) gc.thinkingConfig = /gemini-2\.5/.test(model) ? { thinkingBudget: 0 } : { thinkingLevel: "low" };
+      gc.maxOutputTokens = gc.maxOutputTokens || 900;
+      try {
+        const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":streamGenerateContent?alt=sse" + (AI_HOW === "q" ? "&key=" + encodeURIComponent(env.GEMINI_KEY) : ""), {
+          method: "POST", headers: AI_HOW === "q" ? { "Content-Type": "application/json" } : { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_KEY }, body: JSON.stringify(j) });
+        if (r.ok) { AI_GOOD = model; return pipe(r, x => (((x.candidates || [])[0] || {}).content || {}).parts ? x.candidates[0].content.parts.map(p => p.thought ? "" : (p.text || "")).join("") : ""); }
+        const t = await r.text();
+        if (/location is not supported/i.test(t)) { GEM_BLOCKED = Date.now() + 3600e3; break; }
+        if (r.status === 400 && /thinking/i.test(t)) NO_THINK = true;
+        if (r.status === 404 || r.status === 429 || r.status >= 500) BAD[model] = now + (r.status === 404 ? 86400e3 : 600e3);
+      } catch (e) {}
+    }
+  }
+  // 3) không dòng chảy: dùng đường /ai cũ rồi trả chữ một lần
+  const rr = await ai(new Request(request.url, { method: "POST", body: bodyStr }), env, url, origin);
+  if (!rr.ok) return new Response(await rr.text(), { status: rr.status, headers: H });
+  try { const j = await rr.json(); return new Response((((j.candidates || [])[0] || {}).content || {}).parts.map(p => p.text || "").join(""), { headers: H }); }
+  catch (e) { return new Response("", { status: 502, headers: H }); }
+}
+
 /* ---- AI viết chữ theo thứ tự Claude -> Gemini -> Cloudflare (dùng cho phụ đề) ---- */
 async function gemTextLLM(env, messages, maxTokens) {
   const sys = messages.filter(m => m.role === "system").map(m => m.content).join("\n");
@@ -460,6 +527,7 @@ export default {
     const url = new URL(request.url), origin = request.headers.get("Origin") || "";
     if (request.method === "OPTIONS") return new Response(null, { headers: cors(origin) });
     if (url.pathname === "/") return new Response("Máy chủ giọng đọc miễn phí đang chạy. Đã sẵn sàng. " + VERSION + (env.GEMINI_KEY ? " · Đã có khóa Gemini." : " · Chưa có khóa Gemini."), { headers: { "Content-Type": "text/plain; charset=utf-8", ...cors(origin) } });
+    if (url.pathname === "/ai" && request.method === "POST" && url.searchParams.get("stream")) return aiStream(request, env, url, origin);
     if (url.pathname === "/ai") return ai(request, env, url, origin);
     if (url.pathname === "/phude" && request.method === "POST") return phude(request, env, url, origin);
     if (url.pathname === "/nghe" && request.method === "POST") return nghe(request, env, url, origin);
